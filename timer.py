@@ -152,7 +152,7 @@ def render(players: list, cur: int):
 
     buf.append("")
     buf.append(bold("─" * _WIDE))
-    buf.append(f"  按 {bold('空格')} 结束当前回合    按 {bold('Q')} 退出")
+    buf.append(f"  按 {bold('空格')} 结束当前回合    按 {bold('P')} 暂停/恢复    按 {bold('Q')} 退出")
     buf.append(cyan(bold("═" * _WIDE)))
     buf.append("")
 
@@ -171,8 +171,40 @@ def next_active(players: list, from_idx: int) -> int:
     return -1  # 全部超时
 
 
+def render_paused(players: list, cur: int):
+    """在暂停状态下渲染，顶部显示醒目的暂停提示。"""
+    buf = [CURSOR_HOME + CLEAR_TO_END]
+    buf.append(yellow(bold("═" * _WIDE)))
+    buf.append(yellow(bold("          ⏸  已暂停 — 按 P 继续          ")))
+    buf.append(yellow(bold("═" * _WIDE)))
+    buf.append("")
+
+    for i, p in enumerate(players):
+        if p.timed_out:
+            arrow  = "  "
+            marker = red("[超时]")
+        elif i == cur:
+            arrow  = yellow("▶ ")
+            marker = yellow(bold("[等待中]"))
+        else:
+            arrow  = "  "
+            marker = ""
+
+        buf.append(f"  {arrow}{bold(f'玩家 {p.pid}')}  {p.time_str()} {marker}")
+
+    buf.append("")
+    buf.append(bold("─" * _WIDE))
+    buf.append(f"  按 {bold('P')} 继续计时    按 {bold('Q')} 退出")
+    buf.append(yellow(bold("═" * _WIDE)))
+    buf.append("")
+
+    sys.stdout.write("\n".join(buf))
+    sys.stdout.flush()
+
+
 def run(players: list):
     cur        = 0
+    paused     = False
     last_tick  = time.perf_counter()
 
     # Unix：切换终端为 cbreak 模式（不等 Enter）
@@ -192,6 +224,17 @@ def run(players: list):
             last_tick = now
 
             p = players[cur]
+
+            if paused:
+                render_paused(players, cur)
+                key = read_key()
+                if key in (b"p", b"P"):
+                    paused    = False
+                    last_tick = time.perf_counter()   # 跳过暂停期间的时间
+                elif key in (b"q", b"Q", b"\x1b"):
+                    break
+                time.sleep(0.05)
+                continue
 
             if not p.timed_out:
                 just_out = p.tick(dt)
@@ -215,6 +258,8 @@ def run(players: list):
                     break
                 cur       = nxt
                 last_tick = time.perf_counter()
+            elif key in (b"p", b"P"):
+                paused = True
             elif key in (b"q", b"Q", b"\x1b"):
                 break
 
