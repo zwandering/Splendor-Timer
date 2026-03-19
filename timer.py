@@ -20,6 +20,7 @@
 import sys
 import time
 import argparse
+import threading
 
 # ── 跨平台键盘支持 ────────────────────────────────────────────────────────────
 try:
@@ -63,6 +64,22 @@ CURSOR_HOME   = "\033[H"
 CLEAR_TO_END  = "\033[J"
 
 
+# ── 蜂鸣器 ───────────────────────────────────────────────────────────────────
+def beep(freq: int = 880, duration: int = 150):
+    """后台异步蜂鸣，不阻塞主循环。Windows 用 winsound，其余终端铃声。"""
+    def _play():
+        if IS_WINDOWS:
+            try:
+                import winsound
+                winsound.Beep(freq, duration)
+                return
+            except Exception:
+                pass
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+    threading.Thread(target=_play, daemon=True).start()
+
+
 # ── 玩家计时器 ─────────────────────────────────────────────────────────────────
 class PlayerTimer:
     """
@@ -81,6 +98,7 @@ class PlayerTimer:
         self.in_byoyomi      = False
         self.timed_out       = False
         self.turns           = 0                     # 已完成回合数
+        self._last_beep_floor = int(byoyomi_time)    # 读秒蜂鸣追踪（地板值）
 
     def tick(self, dt: float) -> bool:
         """推进 dt 秒；返回 True 表示刚刚超时。"""
@@ -93,6 +111,7 @@ class PlayerTimer:
                 self.main_time  = 0.0
                 self.in_byoyomi = True
                 self.period_remain = self.byoyomi_time
+                self._last_beep_floor = int(self.byoyomi_time)
         else:
             self.period_remain -= dt
             if self.period_remain <= 0.0:
@@ -102,6 +121,7 @@ class PlayerTimer:
                     self.timed_out     = True
                     return True
                 self.period_remain = self.byoyomi_time
+                self._last_beep_floor = int(self.byoyomi_time)
 
         return False
 
@@ -110,6 +130,30 @@ class PlayerTimer:
         self.turns += 1
         if self.in_byoyomi and not self.timed_out:
             self.period_remain = self.byoyomi_time
+            self._last_beep_floor = int(self.byoyomi_time)
+
+    def deduct(self, seconds: float = 5.0):
+        """扣除指定秒数；可跨主时间/读秒边界，直至超时。"""
+        if self.timed_out:
+            return
+        if not self.in_byoyomi:
+            self.main_time -= seconds
+            if self.main_time <= 0.0:
+                self.main_time = 0.0
+                self.in_byoyomi = True
+                self.period_remain = self.byoyomi_time
+                self._last_beep_floor = int(self.byoyomi_time)
+        else:
+            self.period_remain -= seconds
+            while self.period_remain <= 0.0:
+                self.periods_left -= 1
+                if self.periods_left <= 0:
+                    self.periods_left  = 0
+                    self.period_remain = 0.0
+                    self.timed_out     = True
+                    return
+                self.period_remain += self.byoyomi_time
+            self._last_beep_floor = int(self.period_remain)
 
     def time_str(self) -> str:
         """格式化当前时间，固定宽度。"""
@@ -152,7 +196,8 @@ def render(players: list, cur: int):
 
     buf.append("")
     buf.append(bold("─" * _WIDE))
-    buf.append(f"  按 {bold('空格')} 结束当前回合    按 {bold('P')} 暂停/恢复    按 {bold('Q')} 退出")
+    buf.append(f"  按 {bold('空格')} 结束回合  按 {bold('P')} 暂停  按 {bold('Q')} 退出")
+    buf.append(f"  按 {bold('数字键 1-9')} 给对应玩家扣除 5 秒")
     buf.append(cyan(bold("═" * _WIDE)))
     buf.append("")
 
@@ -238,6 +283,12 @@ def run(players: list):
 
             if not p.timed_out:
                 just_out = p.tick(dt)
+                # ── 读秒蜂鸣：每秒响一次，最后5秒提高频率 ──────────────────
+                if p.in_byoyomi and not p.timed_out:
+                    floor = int(p.period_remain)
+                    if floor != p._last_beep_floor:
+                        p._last_beep_floor = floor
+                        beep(1320 if floor <= 4 else 880, 120)
                 if just_out:
                     render(players, cur)
                     time.sleep(1.2)
@@ -262,6 +313,10 @@ def run(players: list):
                 paused = True
             elif key in (b"q", b"Q", b"\x1b"):
                 break
+            elif key and b"1" <= key <= b"9":
+                idx = int(key) - 1
+                if idx < len(players) and not players[idx].timed_out:
+                    players[idx].deduct(5.0)
 
             time.sleep(0.05)   # ~20 FPS
 
